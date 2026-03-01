@@ -20,6 +20,7 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <SD.h>
+#include <vector>
 #include <Arduino_GFX_Library.h>
 #include <XPT2046_Touchscreen.h>
 #include <esp_wifi.h>
@@ -4793,7 +4794,7 @@ static const char GALLERY_HTML_HEAD[] = R"EOF(
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:radial-gradient(ellipse at 50% 50%,#0d003d,#000010 70%);
 min-height:100vh;display:flex;flex-direction:column;align-items:center;
-font-family:'Courier New',monospace;color:#fff;padding:20px 12px 28px}
+font-family:'Courier New',monospace;color:#fff;padding:20px 12px 80px}
 .glw{position:fixed;border-radius:50%;filter:blur(90px);z-index:-1;pointer-events:none}
 .g1{width:350px;height:350px;top:-120px;left:-120px;background:rgba(131,56,236,.3)}
 .g2{width:300px;height:300px;bottom:-100px;right:-100px;background:rgba(255,215,0,.12)}
@@ -4817,16 +4818,40 @@ box-shadow:0 0 10px rgba(255,215,0,.05);transition:transform .15s,box-shadow .15
 border:1px solid rgba(255,215,0,.35);border-radius:5px;padding:3px 8px;margin-right:5px}
 .fcard:hover .fbtn{color:#ffd700;border-color:rgba(255,215,0,.7)}
 .fthumb{width:100%;height:120px;object-fit:cover;border-radius:7px;margin-bottom:6px;display:block;background:rgba(0,0,0,.3)}
+.fwrap{position:relative}
+.fchk{position:absolute;top:8px;left:8px;z-index:2;line-height:1}
+.fchk input{width:18px;height:18px;cursor:pointer;accent-color:#ffd700}
+.bar{position:fixed;bottom:0;left:0;right:0;padding:10px 14px;
+background:rgba(6,0,26,.96);border-top:1px solid rgba(255,215,0,.25);
+display:flex;gap:8px;justify-content:center;flex-wrap:wrap;z-index:100}
+.bbtn{font-family:'Courier New',monospace;font-size:.42rem;letter-spacing:2px;
+padding:7px 13px;border-radius:6px;border:1px solid rgba(255,215,0,.35);
+color:rgba(255,215,0,.65);background:transparent;cursor:pointer;text-decoration:none;white-space:nowrap}
+.bbtn:active{color:#ffd700;border-color:#ffd700}
+.bprim{background:rgba(255,215,0,.12);color:#ffd700;border-color:rgba(255,215,0,.6)}
 </style></head><body>
 <div class="glw g1"></div><div class="glw g2"></div>
 <nav><a href="/">&#x2190; BACK</a></nav>
 <h1>SD FILE GALLERY</h1>
 <p class="sub">BROWSE &amp; DOWNLOAD FILES</p>
+<div class="bar">
+<button class="bbtn" onclick="selAll()">&#x2611; ALL</button>
+<button class="bbtn" onclick="selNone()">&#x2610; NONE</button>
+<button class="bbtn bprim" onclick="dlSel()">&#x2B07; SELECTED <span id="sc"></span></button>
+<a class="bbtn bprim" href="/zip?all=1">&#x2B07; ALL FILES</a>
+</div>
 <div class="fgrid">
 )EOF";
 static const char GALLERY_HTML_FOOT[] = R"EOF(
 </div>
 <footer style="margin-top:24px;font-size:.4rem;letter-spacing:4px;color:rgba(255,255,255,.07);text-align:center">cosmic-cyd &middot; sd card gallery &middot; 192.168.4.1</footer>
+<script>
+function selAll(){document.querySelectorAll('.fchk input').forEach(function(c){c.checked=true;});upd();}
+function selNone(){document.querySelectorAll('.fchk input').forEach(function(c){c.checked=false;});upd();}
+function upd(){var n=document.querySelectorAll('.fchk input:checked').length;document.getElementById('sc').textContent=n?'('+n+')':(document.getElementById('sc').textContent='');}
+function dlSel(){var f=Array.from(document.querySelectorAll('.fchk input:checked')).map(function(c){return encodeURIComponent(c.value);});if(!f.length)return;window.location='/zip?files='+f.join(',');}
+document.querySelectorAll('.fchk input').forEach(function(c){c.addEventListener('change',upd);});
+</script>
 </body></html>
 )EOF";
 
@@ -5060,7 +5085,9 @@ void handleGallery() {
                     String name = String(f.name());
                     if (name.startsWith("/")) name = name.substring(1);
                     String sizeStr = formatFileSize(f.size());
-                    String card    = "<a class=\'fcard\' href=\'/file?n=";
+                    String card    = "<div class=\'fwrap\'><label class=\'fchk\'><input type=\'checkbox\' value=\'";
+                    card += name;
+                    card += "\'></label><a class=\'fcard\' href=\'/file?n=";
                     card += name;
                     card += "\'>";
                     if (isImageFile(name)) {
@@ -5075,7 +5102,7 @@ void handleGallery() {
                     card += "<span class=\'fbtn\'>OPEN &rarr;</span>"
                             "<a class=\'fbtn\' style=\'text-decoration:none\' href=\'/dl?n=";
                     card += name;
-                    card += "\'>DL</a></a>";
+                    card += "\'>DL</a></a></div>";
                     server.sendContent(card);
                 }
                 f.close();
@@ -5120,6 +5147,127 @@ void handleFileDownload() {
     server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
     server.streamFile(f, contentType(name));
     f.close();
+}
+
+// ── /zip — stream a PKZIP (STORE) archive of selected or all SD files ─────────
+// /zip?all=1              → every file on the SD card
+// /zip?files=a.jpg,b.png → specific comma-separated files
+void handleZipDownload() {
+    if (sdLockedOut()) return;
+    if (!sdReady) { server.send(503, "text/plain", "SD not ready"); return; }
+
+    // Build file list
+    std::vector<String> files;
+    if (server.hasArg("all")) {
+        File root = SD.open("/");
+        if (root) {
+            File f = root.openNextFile();
+            while (f) {
+                if (!f.isDirectory()) {
+                    String n = String(f.name());
+                    if (n.startsWith("/")) n = n.substring(1);
+                    if (n.indexOf("..") < 0) files.push_back(n);
+                }
+                f.close();
+                f = root.openNextFile();
+            }
+            root.close();
+        }
+    } else {
+        String list = server.arg("files");
+        int s = 0;
+        while (s <= (int)list.length()) {
+            int c = list.indexOf(',', s);
+            if (c < 0) c = list.length();
+            String n = list.substring(s, c);
+            n.trim();
+            if (n.length() > 0 && n.indexOf("..") < 0) files.push_back(n);
+            s = c + 1;
+        }
+    }
+    if (files.empty()) { server.send(400, "text/plain", "No files selected"); return; }
+
+    server.sendHeader("Content-Disposition", "attachment; filename=\"cosmic-cyd.zip\"");
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/zip", "");
+
+    // Per-file metadata needed for the central directory written at the end
+    struct ZipEntry { String name; uint32_t crc32; uint32_t size; uint32_t offset; };
+    std::vector<ZipEntry> entries;
+    uint32_t pos = 0;
+    uint8_t  buf[512];
+
+    for (const String& fname : files) {
+        String path = "/" + fname;
+
+        // Pass 1 — compute CRC32 (needed in the local file header)
+        File f = SD.open(path);
+        if (!f || f.isDirectory()) { if (f) f.close(); continue; }
+        uint32_t fsize = f.size();
+        uint32_t crc = 0xFFFFFFFF;
+        while (f.available()) {
+            int n = f.read(buf, sizeof(buf));
+            for (int i = 0; i < n; i++) {
+                crc ^= buf[i];
+                for (int b = 0; b < 8; b++) crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1));
+            }
+        }
+        crc ^= 0xFFFFFFFF;
+        f.close();
+
+        entries.push_back({ fname, crc, fsize, pos });
+        uint16_t nlen = fname.length();
+
+        // Local file header (30 bytes + filename, STORE method)
+        uint8_t lhdr[30] = {};
+        lhdr[0]=0x50; lhdr[1]=0x4B; lhdr[2]=0x03; lhdr[3]=0x04; // PK\x03\x04
+        lhdr[4] = 0x14;                                            // version needed 2.0
+        lhdr[14]=(crc)     &0xFF; lhdr[15]=(crc>>8) &0xFF; lhdr[16]=(crc>>16)&0xFF; lhdr[17]=(crc>>24)&0xFF;
+        lhdr[18]=(fsize)   &0xFF; lhdr[19]=(fsize>>8)&0xFF; lhdr[20]=(fsize>>16)&0xFF; lhdr[21]=(fsize>>24)&0xFF;
+        lhdr[22]=(fsize)   &0xFF; lhdr[23]=(fsize>>8)&0xFF; lhdr[24]=(fsize>>16)&0xFF; lhdr[25]=(fsize>>24)&0xFF;
+        lhdr[26]=nlen&0xFF; lhdr[27]=(nlen>>8)&0xFF;
+        server.sendContent((const char*)lhdr, 30);
+        server.sendContent(fname.c_str(), nlen);
+        pos += 30 + nlen;
+
+        // Pass 2 — stream file data
+        f = SD.open(path);
+        while (f.available()) {
+            int n = f.read(buf, sizeof(buf));
+            server.sendContent((const char*)buf, n);
+        }
+        f.close();
+        pos += fsize;
+    }
+
+    // Central directory
+    uint32_t cdStart = pos;
+    for (const ZipEntry& e : entries) {
+        uint16_t nlen = e.name.length();
+        uint8_t cdr[46] = {};
+        cdr[0]=0x50; cdr[1]=0x4B; cdr[2]=0x01; cdr[3]=0x02; // PK\x01\x02
+        cdr[4]=0x14; cdr[6]=0x14;
+        cdr[16]=(e.crc32)    &0xFF; cdr[17]=(e.crc32>>8) &0xFF; cdr[18]=(e.crc32>>16)&0xFF; cdr[19]=(e.crc32>>24)&0xFF;
+        cdr[20]=(e.size)     &0xFF; cdr[21]=(e.size>>8)  &0xFF; cdr[22]=(e.size>>16) &0xFF; cdr[23]=(e.size>>24) &0xFF;
+        cdr[24]=(e.size)     &0xFF; cdr[25]=(e.size>>8)  &0xFF; cdr[26]=(e.size>>16) &0xFF; cdr[27]=(e.size>>24) &0xFF;
+        cdr[28]=nlen&0xFF; cdr[29]=(nlen>>8)&0xFF;
+        cdr[42]=(e.offset)   &0xFF; cdr[43]=(e.offset>>8)&0xFF; cdr[44]=(e.offset>>16)&0xFF; cdr[45]=(e.offset>>24)&0xFF;
+        server.sendContent((const char*)cdr, 46);
+        server.sendContent(e.name.c_str(), nlen);
+        pos += 46 + nlen;
+    }
+
+    // End of central directory record
+    uint32_t cdSize = pos - cdStart;
+    uint16_t nent   = entries.size();
+    uint8_t eocd[22] = {};
+    eocd[0]=0x50; eocd[1]=0x4B; eocd[2]=0x05; eocd[3]=0x06; // PK\x05\x06
+    eocd[8] =nent&0xFF;    eocd[9] =(nent>>8)&0xFF;
+    eocd[10]=nent&0xFF;    eocd[11]=(nent>>8)&0xFF;
+    eocd[12]=cdSize&0xFF;  eocd[13]=(cdSize>>8)&0xFF;  eocd[14]=(cdSize>>16)&0xFF;  eocd[15]=(cdSize>>24)&0xFF;
+    eocd[16]=cdStart&0xFF; eocd[17]=(cdStart>>8)&0xFF; eocd[18]=(cdStart>>16)&0xFF; eocd[19]=(cdStart>>24)&0xFF;
+    server.sendContent((const char*)eocd, 22);
+    server.sendContent("");   // flush / end chunked stream
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5602,6 +5750,7 @@ void setup() {
     server.on("/gallery",      HTTP_GET,  handleGallery);
     server.on("/file",         HTTP_GET,  handleFileServe);
     server.on("/dl",           HTTP_GET,  handleFileDownload);
+    server.on("/zip",          HTTP_GET,  handleZipDownload);
     // API
     server.on("/api/msg",          HTTP_GET,  handleApiMsg);
     server.on("/api/visitor-msg",  HTTP_POST, handleApiVisitorMsg);
