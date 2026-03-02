@@ -1,0 +1,12 @@
+{
+  "name": "Cosmic Core Art Portal",
+  "version": "1.0",
+  "description": "Full-featured WiFi captive portal on M5Stack Core 1. Hosts 70+ generative art animations, cosmic trivia (100 questions), visitor guestbook (SD-backed), SD file gallery with password protection, screensaver system (Matrix Rain, Starfield, Plasma, SD image shuffle), and operator preset messages via physical buttons. Connect to 'COSMIC-CORE FILE GALLERY' AP to explore. BtnB to send preset messages when visitors are connected.",
+  "author": "CoreyMillia",
+  "category": "Art/Utility",
+  "file": "CosmicCore-v1.0-MERGED.bin",
+  "bootloader": "0x1000",
+  "partition": "0x8000",
+  "app": "0x10000",
+  "chip": "esp32"
+}

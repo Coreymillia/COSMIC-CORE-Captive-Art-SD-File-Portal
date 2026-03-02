@@ -1,92 +1,53 @@
-# COSMIC-CYD 🎨
+# COSMIC-CORE — M5Stack Core 1 Art Portal
 
-A WiFi captive portal art gallery + SD card file share, running on the **ESP32 CYD (Cheap Yellow Display)**.
-
-No internet required. No accounts. No tracking. Just connect and explore.
-
-![COSMIC-CYD running on the CYD — showing VISITORS: 1, SD: NO CARD, 192.168.4.1](IMG_20260301_135807.jpg)
+A full-featured **WiFi captive portal** for the **M5Stack Core 1 (Basic)**. Power it on, connect your phone to the WiFi hotspot, and you're dropped into an interactive art gallery, cosmic trivia game, visitor guestbook, and SD file gallery — all running on a tiny ESP32 with three physical buttons.
 
 ---
 
-## Screenshots
+## Photos
 
-### Captive portal prompt
-When you connect to the WiFi, your OS automatically prompts you to sign in:
-
-![OS captive portal sign-in prompt for COSMIC-CYD FILE GALLERY](Screenshot_20260301-143805.png)
-
-### Portal index
-The main portal page — links to the file gallery and all 72+ art modes:
-
-![Portal index page](Screenshot_20260228-165922.png)
-![Portal index — full view](Screenshot_20260301-143945.png)
-
-### Art modes
-Generative art and animations running entirely in the browser — no install, no app:
-
-![Art mode running — animation example 1](Screenshot_20260228-165946.png)
-![Art mode running — animation example 2](Screenshot_20260228-223657.png)
-![Art mode running — animation example 3](Screenshot_20260228-223711.png)
-![Art mode running — animation example 4](Screenshot_20260228-223724.png)
-![Art mode running — animation example 5](Screenshot_20260228-223758.png)
-
-### SD card gallery with thumbnails
-Image files on the SD card are shown as live thumbnails — no app or preprocessing needed:
-
-![SD gallery showing image thumbnails of dog photos](Screenshot_20260301-144007.png)
+| Idle Portal Screen | Matrix Rain Screensaver |
+|---|---|
+| ![Idle portal screen showing VISITORS: 1 and SD: READY](IMG_20260302_112354.jpg) | ![Matrix rain screensaver running on the M5Stack display](IMG_20260302_121451.jpg) |
 
 ---
 
-## What it does
+## Features
 
-Power it on and your phone sees a WiFi network called **`COSMIC-CYD FILE GALLERY 🎨`**. Connect and you are automatically redirected to the portal. From there you can:
+### 🎨 Art Portal
+- **70+ generative art animations** served as interactive web pages — Matrix Rain, Starfield, Plasma, Mandala, Fractal, Voronoi, Lorenz attractor, Mandelbrot, Game of Life, Snake, Tetris, Breakout, and many more
+- Pure HTML5 Canvas — no app install, works in any phone browser
+- **Captive portal** — connecting to the WiFi AP automatically opens the portal
 
-- **Browse & download any file** loaded onto the SD card — images, ZIPs, PDFs, videos, whatever you put on there
-- **Explore 72+ generative art & animation modes** running entirely in the browser — no app, no install
-- **Read the Free WiFi Safety PSA** — a plain-English guide on how evil portals steal your data (and why this one doesn't)
-- **Send a message** to the device operator via the portal (shows up on the display)
+### 🌌 Cosmic Trivia
+- **100 cosmic & metaphysical questions** — quantum physics, black holes, consciousness, cosmology, science quotes
+- Fully stateless — multiple visitors can play simultaneously
+- Score rating from *Cosmic Infant* to *Cosmic Oracle*
 
-The CYD display shows the SSID, IP address, live visitor count, and SD card status at a glance. The RGB LED pulses blue at idle and flashes green when someone new connects.
+### 📜 Visitor Guestbook
+- Visitors leave a name and message (up to 100 characters)
+- Entries saved permanently to SD card (`/guestbook.txt`)
+- Last 10 entries shown in the portal
+- Display flashes **NEW ENTRY!** + name + message for 10 seconds when someone signs
 
-When **no visitor is connected**, the CYD display runs a **Matrix rain screensaver**. You can replace the rain with any JPEG image from your SD card — it stays on the display until you remove it.
+### 🗂️ SD File Gallery
+- Browse and download files from the SD card over the portal
+- Optional password protection (`/sdpass.txt` on SD)
+- Single-visitor lock — the first connected device gets exclusive gallery access
+- Bulk ZIP download
 
----
+### 🌠 Screensavers (when no visitors connected)
+- **Matrix Rain** — green falling characters
+- **Starfield** — 3D warp star tunnel
+- **Plasma Waves** — sinusoidal color field
+- **Single Image** — display a custom JPEG from SD (`/ssaver.jpg`)
+- **SD Image Shuffle** — cycle through all JPEGs on the SD card on a timer (1 / 5 / 15 / 30 min)
+- Mode and interval saved to NVS flash — survives reboots
 
-## Gallery password lock 🔒
-
-> ⚠️ **If your SD card has sensitive files, set a password immediately after flashing.** The gallery is open by default.
-
-The SD file gallery can be locked with a password. Once set, any visitor who tries to open the gallery is shown a login screen first. The password is stored in `/sdpass.txt` on the SD card.
-
-**To set a password:**
-1. Open the portal → tap **🔒 GALLERY LOCK** on the main page
-2. Tap **🔒 PASSWORD** in the gallery nav bar (top-right, purple button)
-3. Enter and confirm your new password — it takes effect immediately
-
-**To change or remove a password:**
-- Navigate to **Gallery → 🔒 PASSWORD**
-- Enter your current password, then set a new one — or leave the new password blank to go passwordless
-
-**How the session works:**
-- Only **one IP at a time** is considered authenticated — when a visitor disconnects, the session clears automatically
-- Internal files (`ssaver.jpg`, `sdpass.txt`) are always hidden from the gallery and blocked from download, regardless of auth state
-
----
-
-## Screensaver image 🖼️
-
-When no visitor is connected, the CYD display can show a custom JPEG image instead of the Matrix rain.
-
-**To set a screensaver image:**
-1. Open the portal → tap **📺 SCREENSAVER** on the main page  
-   *or* open **SD Gallery → tap the 🖼️ SSAVER button** on any image card
-2. The image is copied to `/ssaver.jpg` on the SD card and shown on the display immediately
-3. The image persists across reboots until you remove it
-
-**To remove the image and return to Matrix rain:**
-- Open the portal → **📺 SCREENSAVER** → tap **✕ REMOVE IMAGE**
-
-You can also upload a JPEG directly from your phone via the Screensaver page without needing it on the SD card first. Images are automatically scaled to fit the 320×240 display.
+### 💬 Operator Preset Messages
+- When a visitor is connected, press **BtnB** to open the message menu
+- 5 preset messages displayed in the portal (`/api/msg`)
+- **BtnA** scrolls up, **BtnB** sends, **BtnC** cancels
 
 ---
 
@@ -94,116 +55,114 @@ You can also upload a JPEG directly from your phone via the Screensaver page wit
 
 | Component | Details |
 |---|---|
-| Board | ESP32-2432S028R (CYD — Cheap Yellow Display) |
-| Display | ILI9341 · 320×240 · 2.8" TFT |
-| Touchscreen | XPT2046 |
-| RGB LED | On-board (R=GPIO4, G=GPIO16, B=GPIO17) |
-| SD Card slot | Built-in TF/microSD |
-| Flash | 4MB (huge_app partition — ~3MB app space) |
-
-### Pin map
-
-| Function | GPIO |
-|---|---|
-| Display DC | 2 |
-| Display CS | 15 |
-| Display SCK | 14 |
-| Display MOSI | 13 |
-| Display MISO | 12 |
-| Backlight | 21 |
-| Touch CS | 33 |
-| Touch IRQ | 36 |
-| Touch SCK | 25 |
-| Touch MOSI | 32 |
-| Touch MISO | 39 |
-| SD CS | 5 |
-| SD SCK | 18 |
-| SD MOSI | 23 |
-| SD MISO | 19 |
+| Board | M5Stack Core 1 (Basic / Gray) |
+| Display | ILI9341 TFT 320×240, built-in |
+| Buttons | BtnA (left), BtnB (middle), BtnC (right) |
+| SD Card | Built-in slot (CS GPIO4) |
+| WiFi | ESP32 built-in 2.4 GHz |
 
 ---
 
-## SD Card setup
+## Flashing
 
-1. Format a microSD card as **FAT32**
-2. Drop any files you want to share into the **root directory** — images, documents, archives, anything
-3. Insert into the CYD and power on
-4. The display will show **SD: READY** and visitors can browse and download everything from the portal at `192.168.4.1/gallery`
+### Option 1 — M5Burner (easiest)
 
-No folders required. Any file in the root is served. Supports JPG, PNG, GIF, BMP, MP4, MP3, PDF, ZIP, TXT, and everything else — unknown types are served as a generic download.
+1. Open **M5Burner**, click **Load** and select `CosmicCore-v1.0-MERGED.bin`
+2. Set flash offset to **0x0**
+3. Select your M5Stack COM port and click **Burn**
 
----
+### Option 2 — PlatformIO
 
-## Portal routes
-
-| Route | Description |
-|---|---|
-| `/` | Main index — file gallery link + all art modes |
-| `/gallery` | Dynamic SD card file browser (password-gated if set) |
-| `/gallery/login` | Gallery login page |
-| `/gallery/settings` | Password management (change / remove password) |
-| `/screensaver` | Screensaver status + image upload |
-| `/screensaver/pick?file=name` | Set a file from SD as the screensaver image |
-| `/screensaver/clear` | Remove screensaver image, return to Matrix rain |
-| `/file?n=filename` | View / stream a file from SD |
-| `/dl?n=filename` | Force-download a file from SD |
-| `/zip?all=1` | Download all SD files as a ZIP archive |
-| `/zip?files=a,b` | Download selected files as a ZIP archive |
-| `/safety` | Free WiFi safety PSA |
-| `/api/msg` | GET — poll for operator messages |
-| `/api/visitor-msg` | POST — visitor sends message to display |
-
----
-
-## Art modes (72+)
-
-Organized into categories, all running via Canvas/WebGL in the browser:
-
-**Matrix Rain** — Matrix, Cyber Rain, Binary, Fire Rain, Ice Rain, Storm Rain, Blood Rain, Gold Rain, Void Rain, Phantom, Ripple Rain, Glitch Rain
-
-**Fractals & Mathematics** — Julia Set, Hopalong Attractor, Interference, Voronoi, Strange Attractor, Lissajous, Sierpinski, Spirograph, Barnsley Fern, Apollonian, Sunflower, Quasicrystal, Lorenz, Mandelbrot, Reaction Diffusion, Maze
-
-**Space & Cosmos** — Starfield, Tunnel, Deep Stars, Wormhole, Nebula, Warp Grid
-
-**Generative Art** — Mandala, Plasma, Particles, Aurora, Kaleidoscope, Lava Lamp, Noise Field, Vines, Coral, Flow Field, Crystal Growth, Plasma Globe, Acid Spiral, C-Waves, DNA Helix, Mirror Blob, Goop, Metaballs
-
-**Simulations** — Campfire, Raindrops, Game of Life, Dragon Curve, Cityflow, Fireworks, Lightning, Bounce Balls, Neon Rain, Sand Fall, Retro Geo
-
-**3D** — Rotating Cube, Torus, Hypercube
-
-**Games** — Snake, Breakout, Tetris
-
----
-
-## Build & flash
-
-```bash
-# Clone or download, open in PlatformIO
-cd CosmicCYD
+```
 pio run --target upload
-pio device monitor
 ```
 
-Requires [PlatformIO](https://platformio.org/). All dependencies are pulled automatically on first build.
+---
+
+## Usage
+
+1. Power on the M5Stack
+2. On your phone or PC, connect to WiFi:
+   ```
+   COSMIC-CORE FILE GALLERY 🎨
+   ```
+3. A browser page opens automatically (captive portal). If not, navigate to:
+   ```
+   192.168.4.1
+   ```
+4. Explore the portal — art, trivia, guestbook, and gallery are all linked from the home page
 
 ---
 
-## Libraries used
+## Button Reference
 
-- [GFX Library for Arduino](https://github.com/moononournation/Arduino_GFX) — display driver
-- [XPT2046_Touchscreen](https://github.com/PaulStoffregen/XPT2046_Touchscreen) — touch controller
-- [JPEGDEC](https://github.com/bitbank2/JPEGDEC) — JPEG decoding for screensaver image display
-- Arduino `SD` library — SD card (bundled with ESP32 Arduino framework)
-- `WebServer`, `DNSServer`, `Preferences` — WiFi portal & NVS (bundled)
+| Button | Context | Action |
+|---|---|---|
+| **BtnB** (middle) | Visitor connected, idle screen | Open preset message menu |
+| **BtnA** (left) | Message menu open | Scroll up through presets |
+| **BtnB** (middle) | Message menu open | Send selected preset |
+| **BtnC** (right) | Message menu open | Cancel / close menu |
 
 ---
 
-## Notes
+## SD Card Setup (optional)
 
-- No internet connection is ever made. The portal is fully self-contained on the device.
-- Visitor count is stored in NVS flash and survives power cycles.
-- The portal HTML, CSS, and all art animations live in flash. The SD card is only for user files.
-- Files are streamed directly from SD to the browser — large files work fine without buffering in RAM.
-- The gallery password is stored in plaintext in `/sdpass.txt` on the SD card. Remove the card to bypass if you forget it.
-- The screensaver image (`/ssaver.jpg`) and password file (`/sdpass.txt`) are always hidden from the gallery listing and cannot be downloaded by visitors.
-- Built on the [COSMIC-S3](../COSMICQT) T-QT Pro edition and ported to CYD with SD gallery added.
+Place files on the SD card to unlock extra features:
+
+| File | Purpose |
+|---|---|
+| `/sdpass.txt` | Gallery password (plain text, one line) |
+| `/ssaver.jpg` | Custom screensaver image |
+| Any `.jpg` files | Available in SD shuffle screensaver mode + gallery |
+| `/guestbook.txt` | Auto-created on first guestbook sign |
+
+---
+
+## Visitor Count & Persistence
+
+- Total visitor count saved to NVS flash — persists across all reboots
+- Screensaver mode and SD shuffle interval also persisted to NVS
+- Gallery password loaded from SD card on boot
+
+---
+
+## Project Structure
+
+```
+CosmicCore/
+├── platformio.ini
+├── CosmicCore-v1.0-MERGED.bin    — Ready-to-flash merged binary (M5Burner)
+├── CosmicCore-v1.0-MERGED.json   — M5Burner metadata
+├── IMG_20260302_112354.jpg        — Idle portal screen photo
+├── IMG_20260302_121451.jpg        — Matrix rain screensaver photo
+└── src/
+    └── main.cpp                   — Full source (~6900 lines)
+```
+
+---
+
+## Dependencies
+
+Managed automatically by PlatformIO:
+
+| Library | Purpose |
+|---|---|
+| [M5Stack](https://github.com/m5stack/M5Stack) @ ^0.4.6 | Display (TFT_eSPI), buttons, SD, hardware init |
+| [JPEGDEC](https://github.com/bitbank2/JPEGDEC) | JPEG decode for screensaver images |
+
+---
+
+## Memory Usage
+
+| Resource | Used | Available |
+|---|---|---|
+| Flash | 38.5% (1.18 MB) | 61.5% (~1.9 MB) |
+| RAM | 20.3% (66 KB) | 79.7% (~261 KB) |
+
+Partition: `huge_app.csv` (3 MB app partition)
+
+---
+
+## Based On
+
+Ported from **[CosmicCYD](../CosmicCYD)** — the same full portal originally built for the ESP32 CYD (Cheap Yellow Display / ESP32-2432S028R). All web content, screensavers, trivia, guestbook, and gallery logic are identical. Hardware layer swapped: Arduino_GFX + XPT2046 touch → M5Stack library + physical buttons.

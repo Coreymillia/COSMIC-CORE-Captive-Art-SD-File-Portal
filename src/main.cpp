@@ -1,16 +1,15 @@
 /*
- * COSMIC-CYD FREE ART PORTAL + SD FILE GALLERY
- * ESP32 CYD (ESP32-2432S028R) · ILI9341 320×240 · WiFi AP · Captive Portal
+ * COSMIC-CORE FREE ART PORTAL + SD FILE GALLERY
+ * M5Stack Core 1 (ESP32) · ILI9341 320×240 · WiFi AP · Captive Portal
  *
- * Port of COSMIC-S3 T-QT Pro edition to the Cheap Yellow Display (CYD).
- * Adds SD card file gallery: browse & download files over the captive portal.
+ * Port of COSMIC-CYD to M5Stack Core 1 / Basic.
+ * Uses M5Stack built-in display, SD card, and 3 physical buttons (A/B/C).
  *
  * Hardware:
- *   Display  : ILI9341 320×240 via Arduino_GFX_Library HWSPI (DC=2 CS=15 SCK=14 MOSI=13 MISO=12 BL=21)
- *   Touch    : XPT2046 VSPI (CLK=25 MISO=39 MOSI=32 CS=33 IRQ=36)
- *   SD card  : HSPI (CS=5 SCK=18 MOSI=23 MISO=19)
- *   RGB LED  : R=4 G=16 B=17 (active LOW)
- *   Boot btn : GPIO 0 (active LOW)
+ *   Display  : ILI9341 320×240 built-in (M5Stack, via TFT_eSPI / M5.Lcd)
+ *   Input    : BtnA (GPIO39/left), BtnB (GPIO38/middle), BtnC (GPIO37/right)
+ *   SD card  : Built-in (CS=GPIO4, via M5Stack library)
+ *   Boot     : GPIO 0
  */
 
 #include <Arduino.h>
@@ -21,34 +20,22 @@
 #include <Preferences.h>
 #include <SD.h>
 #include <vector>
-#include <Arduino_GFX_Library.h>
-#include <XPT2046_Touchscreen.h>
+#include <M5Stack.h>
 #include <esp_wifi.h>
 #include "tcpip_adapter.h"
 #include <JPEGDEC.h>
 
+// Map gfx-> calls to M5.Lcd (TFT_eSPI, same ILI9341 320×240 as CYD)
+#define gfx (&M5.Lcd)
+
 // ── AP config ─────────────────────────────────────────────────────────────────
-const char* AP_SSID   = "COSMIC-CYD FILE GALLERY \xF0\x9F\x8E\xA8";
+const char* AP_SSID   = "COSMIC-CORE FILE GALLERY \xF0\x9F\x8E\xA8";
 const byte  DNS_PORT  = 53;
 const char* PORTAL_IP = "192.168.4.1";
 
-// ── CYD display pinout ────────────────────────────────────────────────────────
-#define GFX_BL 21
-
-Arduino_DataBus *bus = new Arduino_HWSPI(2 /*DC*/, 15 /*CS*/, 14 /*SCK*/, 13 /*MOSI*/, 12 /*MISO*/);
-Arduino_GFX    *gfx = new Arduino_ILI9341(bus, GFX_NOT_DEFINED /*RST*/, 1 /*rotation: landscape*/);
-
-// ── Touch ─────────────────────────────────────────────────────────────────────
-#define TOUCH_CS  33
-#define TOUCH_IRQ 36
-SPIClass touchSPI(VSPI);
-XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
-
-// Touch calibration — adjust if taps feel misaligned
-#define TS_MINX  200
-#define TS_MAXX  3800
-#define TS_MINY  200
-#define TS_MAXY  3800
+// ── SD card ───────────────────────────────────────────────────────────────────
+// M5Stack Core: SD CS = GPIO4, initialized via SD.begin(4) after M5.begin()
+static bool sdReady = false;
 
 // ── Preset operator messages ──────────────────────────────────────────────────
 static const char* const PRESETS[] = {
@@ -59,15 +46,6 @@ static const char* const PRESETS[] = {
     "Come back soon!"
 };
 static const int PRESET_COUNT = 5;
-
-// ── RGB LED (active LOW) ──────────────────────────────────────────────────────
-#define LED_R 4
-#define LED_G 16
-#define LED_B 17
-
-// ── SD card ───────────────────────────────────────────────────────────────────
-SPIClass sdSPI(HSPI);
-static bool sdReady = false;
 
 // ── SD single-visitor lock ────────────────────────────────────────────────────
 // When sdReady, the first device to connect gets exclusive gallery access.
@@ -94,16 +72,19 @@ static bool         ssaverImageShown = false;
 static uint16_t     sdCycleMins      = 5;      // 1,5,15,30
 static unsigned long sdCycleLast     = 0;
 static int          sdCycleIdx       = 0;
-static uint8_t      ledColorStep  = 0;
-static unsigned long ledColorLast = 0;
 static bool         menuOpen         = false;
-static unsigned long lastTouchMs     = 0;
+static int          menuSel          = 0;   // selected preset index for button menu
 // ── Trivia game state ─────────────────────────────────────────────────────────
 static bool    triviaActive = false;
 static uint8_t triviaQ      = 0;   // current question index (0-24)
 static uint8_t triviaScore  = 0;
 static bool    triviaDisplayDirty = false;
 static unsigned long menuFeedbackUntil = 0;
+
+// ── Guestbook state ───────────────────────────────────────────────────────────
+static String  lastGuestName = "";
+static String  lastGuestMsg  = "";
+static unsigned long guestShowUntil = 0;  // show on CYD until this ms
 
 // ── Message system (visitor ↔ portal) ─────────────────────────────────────────
 static String        pendingMsg    = "";
@@ -189,7 +170,12 @@ footer{margin-top:16px;font-size:.4rem;letter-spacing:4px;color:rgba(255,255,255
   <a class="card" style="background:rgba(20,0,60,.7);border:1px solid rgba(199,119,255,.55)" href="/trivia">
     <span class="icon">&#x1F30C;</span>
     <span class="name" style="color:#c77dff">COSMIC TRIVIA</span>
-    <span class="desc">25 QUESTIONS &middot; TEST THE UNIVERSE</span>
+    <span class="desc">100 QUESTIONS &middot; TEST THE UNIVERSE</span>
+  </a>
+  <a class="card" style="background:rgba(0,20,60,.7);border:1px solid rgba(100,180,255,.45)" href="/guestbook">
+    <span class="icon">&#x1F4DC;</span>
+    <span class="name" style="color:#7dd3fc">GUESTBOOK</span>
+    <span class="desc">LEAVE YOUR MARK &middot; SEE WHO WAS HERE</span>
   </a>
   <a class="card" style="background:rgba(131,56,236,.12);border:1px solid rgba(131,56,236,.35)" href="/gallery/settings">
     <span class="icon">&#x1F512;</span>
@@ -5251,7 +5237,7 @@ void handleGallerySetPass() {
 
 // ── Cosmic Trivia Game ────────────────────────────────────────────────────────
 struct TriviaQuestion { const char* q; const char* o[4]; uint8_t a; };
-static const TriviaQuestion TRIVIA[25] = {
+static const TriviaQuestion TRIVIA[100] = {
   {"What % of the universe is ordinary matter?",
    {"5%","27%","68%","95%"}, 0},
   {"How many stars are estimated in the observable universe?",
@@ -5302,14 +5288,171 @@ static const TriviaQuestion TRIVIA[25] = {
    {"Red dwarf","Blue giant","Yellow dwarf","White dwarf"}, 2},
   {"What % of your body's atoms were forged in ancient stars?",
    {"About 10%","About 50%","About 75%","Nearly 100%"}, 3},
+  // 26-35: Quantum Physics
+  {"The Heisenberg Uncertainty Principle: you cannot simultaneously know...",
+   {"Speed and color","Position and momentum","Mass and charge","Energy and spin"}, 1},
+  {"Schrodinger's cat illustrates which quantum concept?",
+   {"Quantum tunneling","Wave collapse","Superposition and measurement","Entanglement"}, 2},
+  {"The double-slit experiment showed particles behave as...",
+   {"Both waves and particles","Only waves","Only particles","Neither"}, 0},
+  {"Quantum decoherence describes...",
+   {"Particles slowing down","Quantum states becoming classical due to environment","Entanglement breaking","Spin reversal"}, 1},
+  {"Bell's Theorem proved quantum correlations cannot be explained by...",
+   {"Relativity","Local hidden variables","Classical waves","Newtonian forces"}, 1},
+  {"The Pauli Exclusion Principle: no two fermions can occupy...",
+   {"The same orbital","The same quantum state","The same atom","The same energy level"}, 1},
+  {"Hawking Radiation suggests black holes slowly...",
+   {"Absorb all light forever","Emit radiation and evaporate","Expand over time","Split into smaller holes"}, 1},
+  {"Zero-point energy is energy that persists even at...",
+   {"The Big Bang","Absolute zero","Maximum entropy","Quantum vacuum"}, 1},
+  {"The Casimir Effect demonstrates vacuum energy by...",
+   {"Bending light","Causing force between two close plates in vacuum","Creating magnetic monopoles","Quantum tunneling"}, 1},
+  {"Quantum tunneling is when particles pass through barriers they...",
+   {"Are attracted to","Lack energy to surmount classically","Are repelled by","Cannot detect"}, 1},
+  // 36-45: Black Holes & Stellar
+  {"A magnetar is a neutron star with an extremely powerful...",
+   {"Gravitational field","Magnetic field","Electric field","Radiation field"}, 1},
+  {"The Chandrasekhar Limit (~1.4 solar masses) is the max mass of a...",
+   {"Neutron star","White dwarf before collapsing","Red giant","Brown dwarf"}, 1},
+  {"A pulsar is a rotating neutron star emitting beams of...",
+   {"Visible light","Gravitational waves","Radiation (radio/X-ray)","Dark energy"}, 2},
+  {"A quasar is an extremely luminous active galactic nucleus powered by...",
+   {"A pulsar cluster","A supermassive black hole","Nuclear fusion","Dark matter"}, 1},
+  {"Sagittarius A* is the supermassive black hole at the center of...",
+   {"Andromeda","The Milky Way","Laniakea","The Local Group"}, 1},
+  {"Stars are primarily composed of...",
+   {"Helium and carbon","Hydrogen and helium","Oxygen and nitrogen","Carbon and iron"}, 1},
+  {"Stellar nucleosynthesis is the creation of heavy elements...",
+   {"During the Big Bang","Inside stars through fusion","In nebulae","During black hole mergers"}, 1},
+  {"The 'Cosmic Web' describes the universe's...",
+   {"Internet of exoplanets","Filamentary large-scale structure","Dark matter density","Galactic magnetic fields"}, 1},
+  {"The 'Great Attractor' is a gravitational anomaly pulling...",
+   {"Our moon toward Earth","Our galaxy cluster toward it","Comets into the solar system","Stars toward the galactic core"}, 1},
+  {"Gravitational waves were first directly detected in...",
+   {"1990","2005","2015","2020"}, 2},
+  // 46-55: Cosmology & Structure
+  {"The Hubble constant measures the...",
+   {"Distance to nearest galaxy","Rate of the universe's expansion","Speed of light","Rotation of the Milky Way"}, 1},
+  {"Cosmic redshift occurs because light stretches as...",
+   {"Stars move away from us","Space itself expands","Dust filters the light","Gravity slows light"}, 1},
+  {"Olbers' Paradox asks: why is the night sky dark despite...",
+   {"Infinite stars existing","The Sun being so bright","Space being a vacuum","Light being so fast"}, 0},
+  {"Max Tegmark proposed how many levels of multiverse?",
+   {"2","4","7","11"}, 1},
+  {"Eternal inflation theory proposes inflation never stopped, producing...",
+   {"Endless universe expansion","Bubble universes","Infinite dark energy","A steady state cosmos"}, 1},
+  {"The Kardashev Scale classifies civilizations by their...",
+   {"Intelligence","Energy consumption","Technology level","Population size"}, 1},
+  {"A Kardashev Type II civilization harnesses the energy of...",
+   {"A planet","An entire star","A galaxy","A universe"}, 1},
+  {"Panspermia is the theory that life spread through space via...",
+   {"Radio signals","Comets or meteors","Quantum tunneling","Dark matter"}, 1},
+  {"The Drake Equation estimates the number of...",
+   {"Stars in the Milky Way","Communicating civilizations in our galaxy","Exoplanets","Habitable zones"}, 1},
+  {"The 'Pale Blue Dot' photograph was taken by the spacecraft...",
+   {"Hubble","Cassini","Voyager 1","New Horizons"}, 2},
+  // 56-65: Consciousness & Philosophy
+  {"Integrated Information Theory (IIT) measures consciousness with the symbol...",
+   {"Omega","Phi (phi)","Sigma","Delta"}, 1},
+  {"The 'Global Workspace Theory' of consciousness was proposed by...",
+   {"David Chalmers","Bernard Baars","Roger Penrose","Francis Crick"}, 1},
+  {"Panpsychism holds that consciousness is...",
+   {"Only in humans","A fundamental feature of all matter","An illusion","Produced by brains alone"}, 1},
+  {"The Orch-OR theory of consciousness involves quantum processes in...",
+   {"Synapses","Microtubules","Neurons' axons","The cerebral cortex"}, 1},
+  {"Emergence describes properties that arise from a system that...",
+   {"Its individual components alone do not have","Are predictable from basic physics","Result from randomness","Only appear at quantum scales"}, 0},
+  {"The Fibonacci sequence appears in nature as the most efficient pattern for...",
+   {"Crystal formation","Packing and growth","Sound propagation","Light refraction"}, 1},
+  {"The Golden Ratio (phi ~1.618) appears in galaxies, shells, and...",
+   {"Only ancient art","Human body proportions and plant growth","Only mathematical theory","Only architecture"}, 1},
+  {"Cymatics is the study of...",
+   {"Star measurements","Visible patterns formed by sound/vibration in matter","Quantum harmonics","Space acoustics"}, 1},
+  {"The Mandelbrot Set is an infinitely complex fractal generated from...",
+   {"Random noise","A simple iterative equation","Gravitational equations","Wave interference"}, 1},
+  {"The Hindu concept of 'Brahman' describes...",
+   {"Individual soul","The universal infinite reality underlying all existence","A state of meditation","Divine law"}, 1},
+  // 66-75: Science & Quotes
+  {"Carl Sagan: 'We are a way for the cosmos to...'",
+   {"Sustain itself","Know itself","Expand itself","Correct itself"}, 1},
+  {"Einstein: 'The most beautiful thing we can experience is...'",
+   {"The infinite universe","The mysterious","Mathematical truth","The speed of light"}, 1},
+  {"Feynman: 'If you think you understand quantum mechanics, you...'",
+   {"Are a genius","Don't understand quantum mechanics","Can predict the future","Are close to enlightenment"}, 1},
+  {"The Planck length (~1.6x10^-35 m) is the scale at which...",
+   {"Atoms lose electrons","Quantum gravity effects become significant","Quarks dissolve","Space becomes empty"}, 1},
+  {"The Planck time (~5.4x10^-44 s) is the...",
+   {"Age of the universe divided by pi","Smallest meaningful unit of time","Light travel across an atom","Time for nuclear reaction"}, 1},
+  {"A Boltzmann Brain is a hypothetical self-aware entity arising from...",
+   {"Stellar evolution","Random thermal fluctuation in a high-entropy universe","Quantum computers","Neural emergence"}, 1},
+  {"The 'Arrow of Time' is the asymmetry between past and future caused by...",
+   {"Earth's rotation","Increasing entropy","Gravitational pull","The speed of light"}, 1},
+  {"The second law of thermodynamics: entropy in a closed system always...",
+   {"Decreases","Stays constant","Increases","Oscillates"}, 2},
+  {"The 'Mathematical Universe Hypothesis' (Tegmark) states physical reality IS...",
+   {"Described by math","A mathematical structure itself","Computed by a simulation","Approximated by equations"}, 1},
+  {"Leibniz's ultimate question: 'Why is there something rather than...'",
+   {"Everything","Nothing","Darkness","Chaos"}, 1},
+  // 76-85: Cosmic Facts
+  {"Earth is approximately how far from the Milky Way's center?",
+   {"8,000 light-years","26,000 light-years","50,000 light-years","100,000 light-years"}, 1},
+  {"How many confirmed moons does Jupiter have (as of 2024)?",
+   {"16","50","79","95"}, 3},
+  {"The Oort Cloud is a vast distant sphere of icy objects thought to be the source of...",
+   {"Asteroids","Long-period comets","Meteorites","Cosmic dust"}, 1},
+  {"Cosmic rays are primarily high-energy...",
+   {"X-rays from black holes","Protons (and nuclei) from space","Photons from pulsars","Gamma rays from supernovae"}, 1},
+  {"'Dark flow' is an unexplained large-scale motion of...",
+   {"Dark matter clouds","Galaxy clusters beyond the observable universe","Black hole jets","Intergalactic gas"}, 1},
+  {"The Hercules-Corona Borealis Great Wall is estimated to be ~10 billion light-years across, making it...",
+   {"The largest galaxy","The largest known structure in the universe","The biggest void","The oldest nebula"}, 1},
+  {"Cosmic voids are vast regions of space containing very few...",
+   {"Atoms","Galaxies","Photons","Dark matter particles"}, 1},
+  {"The Pioneer Anomaly was an unexpected slight deceleration of Pioneer spacecraft beyond...",
+   {"Jupiter","Saturn","Neptune","Pluto"}, 2},
+  {"Gravitational lensing is when gravity bends...",
+   {"Space around planets","Light from distant objects around massive ones","Radio waves in atmosphere","Sound in vacuum"}, 1},
+  {"Time passing slower near massive objects is called...",
+   {"Time dilation","Gravitational redshift","Temporal compression","Relativistic lag"}, 0},
+  // 86-100: Mixed Cosmic
+  {"Carl Sagan's 'Cosmos: A Personal Voyage' series first aired in...",
+   {"1970","1980","1990","2000"}, 1},
+  {"The James Webb Space Telescope primarily observes in...",
+   {"Visible light","X-ray","Infrared","Radio"}, 2},
+  {"The nearest star system to Earth (Alpha Centauri) is approximately...",
+   {"1.3 light-years away","4.37 light-years away","8 light-years away","12 light-years away"}, 1},
+  {"The most abundant element in the universe is...",
+   {"Helium","Carbon","Hydrogen","Oxygen"}, 2},
+  {"The Cosmic Microwave Background temperature is approximately...",
+   {"0 Kelvin","2.7 Kelvin","10 Kelvin","100 Kelvin"}, 1},
+  {"The observable universe diameter is approximately...",
+   {"13.8 billion light-years","46 billion light-years","93 billion light-years","100 billion light-years"}, 2},
+  {"The estimated number of galaxies in the observable universe is about...",
+   {"200 billion","1 trillion","2 trillion","10 trillion"}, 2},
+  {"What is 'quantum foam'? The hypothetical structure of spacetime at the...",
+   {"Atomic scale","Planck scale","Molecular scale","Stellar scale"}, 1},
+  {"The black hole 'information paradox' asks whether information entering a black hole is truly...",
+   {"Compressed","Destroyed","Transmitted","Reflected"}, 1},
+  {"The Omega Point (Teilhard de Chardin): the universe evolves toward a maximum state of...",
+   {"Entropy","Complexity and consciousness","Temperature","Darkness"}, 1},
+  {"What fraction of a star's life does it spend on the main sequence?",
+   {"About 10%","About 50%","About 90%","Its entire life"}, 2},
+  {"A 'white hole' is the theoretical time-reversal of a...",
+   {"Pulsar","Black hole","Neutron star","Quasar"}, 1},
+  {"The Fermi Paradox becomes more striking because the universe is approximately...",
+   {"1 billion years old","4.5 billion years old","13.8 billion years old","100 billion years old"}, 2},
+  {"Sagan said: 'Somewhere, something incredible is waiting to be...'",
+   {"Found","Known","Discovered","Understood"}, 1},
+  {"The universe's ultimate fate, where all stars burn out and black holes evaporate, is called...",
+   {"The Big Crunch","The Big Rip","Heat Death","The Big Freeze"}, 2},
 };
 
 static const char* triviaRating(uint8_t s) {
-    if (s == 25) return "COSMIC ORACLE \xF0\x9F\x92\x8E \xe2\x80\x94 You ARE the universe, fully awakened.";
-    if (s >= 21) return "GALACTIC SAGE \xF0\x9F\x94\xae \xe2\x80\x94 The cosmos flows through you.";
-    if (s >= 16) return "QUANTUM ADEPT \xe2\x9c\xa8 \xe2\x80\x94 You feel the fabric of spacetime!";
-    if (s >= 11) return "NEBULA NAVIGATOR \xF0\x9F\x8C\x8C \xe2\x80\x94 The cosmos is calling you deeper.";
-    if (s >=  6) return "STARDUST SEEKER \xe2\xad\x90 \xe2\x80\x94 You're made of stars, learn their names!";
+    if (s == 100) return "COSMIC ORACLE \xF0\x9F\x92\x8E \xe2\x80\x94 You ARE the universe, fully awakened.";
+    if (s >= 85)  return "GALACTIC SAGE \xF0\x9F\x94\xae \xe2\x80\x94 The cosmos flows through you.";
+    if (s >= 65)  return "QUANTUM ADEPT \xe2\x9c\xa8 \xe2\x80\x94 You feel the fabric of spacetime!";
+    if (s >= 45)  return "NEBULA NAVIGATOR \xF0\x9F\x8C\x8C \xe2\x80\x94 The cosmos is calling you deeper.";
+    if (s >= 25)  return "STARDUST SEEKER \xe2\xad\x90 \xe2\x80\x94 You are made of stars, learn their names!";
     return           "COSMIC INFANT \xF0\x9F\x8C\x91 \xe2\x80\x94 The universe is vast, keep exploring!";
 }
 
@@ -5353,10 +5496,10 @@ void handleTrivia() {
     html += TRIVIA_CSS;
     html += F("</style></head><body>"
         "<nav><a href='/'>&#x2190; BACK</a></nav>"
-        "<h1>COSMIC TRIVIA</h1><p class='sub'>25 QUESTIONS \xc2\xb7 TEST YOUR UNIVERSAL KNOWLEDGE</p>"
+        "<h1>COSMIC TRIVIA</h1><p class='sub'>100 QUESTIONS \xc2\xb7 TEST YOUR UNIVERSAL KNOWLEDGE</p>"
         "<div class='box'>"
         "<p class='q'>How well do you know the cosmos? From quantum mechanics to the nature of consciousness \xe2\x80\x94 "
-        "25 questions await. The universe is watching.</p>"
+        "100 questions await. The universe is watching.</p>"
         "<a href='/trivia/play?q=0&s=0' class='btn'>&#x1F30C; BEGIN TRANSMISSION</a>"
         "</div></body></html>");
     server.send(200, "text/html", html);
@@ -5365,8 +5508,8 @@ void handleTrivia() {
 void handleTriviaPlay() {
     int q = server.arg("q").toInt();
     int s = server.arg("s").toInt();
-    if (q < 0 || q >= 25) q = 0;
-    if (s < 0 || s > 25)  s = 0;
+    if (q < 0 || q >= 100) q = 0;
+    if (s < 0 || s > 100)  s = 0;
     triviaActive = true;
     triviaQ      = (uint8_t)q;
     triviaScore  = (uint8_t)s;
@@ -5381,10 +5524,10 @@ void handleTriviaPlay() {
         "<nav><a href='/trivia'>&#x2190; QUIT</a></nav>"
         "<h1>COSMIC TRIVIA</h1><p class='sub'>QUESTION ");
     html += (q + 1);
-    html += F(" OF 25</p><div class='box'>");
+    html += F(" OF 100</p><div class='box'>");
     // progress bar
     html += F("<div class='prog'><div class='progfill' style='width:");
-    html += (int)((q * 100) / 25);
+    html += q;  // q/100 * 100 = q
     html += F("%'></div></div>");
     html += F("<div class='score'>SCORE: ");
     html += s;
@@ -5414,8 +5557,8 @@ void handleTriviaAnswer() {
     int q = server.arg("q").toInt();
     int s = server.arg("s").toInt();
     int a = server.arg("a").toInt();
-    if (q < 0 || q >= 25) q = 0;
-    if (s < 0 || s > 25)  s = 0;
+    if (q < 0 || q >= 100) q = 0;
+    if (s < 0 || s > 100)  s = 0;
     if (a < 0 || a > 3)   a = 0;
 
     const TriviaQuestion& tq = TRIVIA[q];
@@ -5434,7 +5577,7 @@ void handleTriviaAnswer() {
     html += TRIVIA_CSS;
     // auto-advance after 2 s
     html += F("</style><script>setTimeout(()=>{location.href='");
-    if (nextQ >= 25) {
+    if (nextQ >= 100) {
         html += "/trivia/results?s=";
         html += newS;
     } else {
@@ -5447,7 +5590,7 @@ void handleTriviaAnswer() {
         "<nav><a href='/trivia'>&#x2190; QUIT</a></nav>"
         "<h1>COSMIC TRIVIA</h1><p class='sub'>QUESTION ");
     html += (q + 1);
-    html += F(" OF 25</p><div class='box'><p class='q'>");
+    html += F(" OF 100</p><div class='box'><p class='q'>");
     html += tq.q;
     html += F("</p>");
     for (uint8_t i = 0; i < 4; i++) {
@@ -5469,7 +5612,7 @@ void handleTriviaAnswer() {
 
 void handleTriviaResults() {
     int s = server.arg("s").toInt();
-    if (s < 0 || s > 25) s = 0;
+    if (s < 0 || s > 100) s = 0;
     triviaActive = false;
     triviaScore  = (uint8_t)s;
     triviaDisplayDirty = true;
@@ -5483,15 +5626,158 @@ void handleTriviaResults() {
         "<h1>COSMIC TRIVIA</h1><p class='sub'>TRANSMISSION COMPLETE</p>"
         "<div class='box'><p class='big'>");
     html += s;
-    html += F(" / 25</p><p class='rating'>");
+    html += F(" / 100</p><p class='rating'>");
     html += triviaRating((uint8_t)s);
     html += F("</p><div class='prog'><div class='progfill' style='width:");
-    html += (s * 100) / 25;
+    html += s;  // s/100 * 100 = s
     html += F("%'></div></div>"
               "<a href='/trivia/play?q=0&s=0' class='btn'>&#x1F501; PLAY AGAIN</a>"
               "<a href='/' class='btn' style='margin-top:8px'>&#x2B21; EXPLORE MODES</a>"
               "</div></body></html>");
     server.send(200, "text/html", html);
+}
+
+// ── Visitor Guestbook ─────────────────────────────────────────────────────────
+static String gbSanitize(String s, int maxLen) {
+    String out = "";
+    for (int i = 0; i < (int)s.length() && (int)out.length() < maxLen; i++) {
+        char c = s[i];
+        if (c >= 0x20 && c != '<' && c != '>' && c != '&') out += c;
+    }
+    return out;
+}
+
+static void gbReadEntries(std::vector<String>& lines, int maxLines) {
+    if (!sdReady) return;
+    File f = SD.open("/guestbook.txt");
+    if (!f) return;
+    // Read up to 8KB (safety cap)
+    String content = "";
+    int bytes = 0;
+    while (f.available() && bytes < 8192) {
+        char c = (char)f.read();
+        content += c;
+        bytes++;
+    }
+    f.close();
+    // Split by newline
+    int start = 0;
+    for (int i = 0; i <= (int)content.length(); i++) {
+        if (i == (int)content.length() || content[i] == '\n') {
+            String line = content.substring(start, i);
+            line.trim();
+            if (line.length() > 1) lines.push_back(line);
+            start = i + 1;
+        }
+    }
+    // Keep only last maxLines
+    if ((int)lines.size() > maxLines) {
+        lines.erase(lines.begin(), lines.begin() + (lines.size() - maxLines));
+    }
+}
+
+void handleGuestbook() {
+    std::vector<String> entries;
+    gbReadEntries(entries, 10);
+
+    static const char* GB_CSS =
+        "*{margin:0;padding:0;box-sizing:border-box}"
+        "body{background:radial-gradient(ellipse at 50% 50%,#0d003d,#000010 70%);"
+        "min-height:100vh;display:flex;flex-direction:column;align-items:center;"
+        "font-family:'Courier New',monospace;color:#fff;padding:24px 16px}"
+        "nav a{font-size:.5rem;letter-spacing:4px;color:rgba(199,119,255,.55);"
+        "text-decoration:none;padding:5px 10px;border:1px solid rgba(199,119,255,.25);border-radius:6px}"
+        "h1{font-size:1.1rem;letter-spacing:6px;text-align:center;margin:18px 0 4px;"
+        "background:linear-gradient(90deg,#c77dff,#8338ec,#c77dff);"
+        "-webkit-background-clip:text;-webkit-text-fill-color:transparent}"
+        ".sub{font-size:.42rem;letter-spacing:6px;color:rgba(199,119,255,.35);margin-bottom:20px;text-align:center}"
+        ".box{width:min(420px,94vw);background:rgba(20,0,40,.75);"
+        "border:1px solid rgba(131,56,236,.4);border-radius:12px;padding:20px;margin-bottom:14px}"
+        ".entry{padding:10px 0;border-bottom:1px solid rgba(131,56,236,.2)}"
+        ".entry:last-child{border-bottom:none}"
+        ".ename{font-size:.48rem;letter-spacing:3px;color:#c77dff;margin-bottom:4px}"
+        ".emsg{font-size:.52rem;letter-spacing:1px;color:rgba(224,208,255,.85);line-height:1.5}"
+        ".empty{font-size:.45rem;letter-spacing:3px;color:rgba(199,119,255,.3);text-align:center;padding:14px 0}"
+        "input,textarea{width:100%;padding:9px;background:rgba(0,0,0,.4);"
+        "border:1px solid rgba(131,56,236,.4);border-radius:6px;color:#c77dff;"
+        "font-family:'Courier New',monospace;font-size:.5rem;margin-top:8px;resize:none}"
+        ".lbl{font-size:.42rem;letter-spacing:3px;color:rgba(199,119,255,.5);display:block;margin-top:12px}"
+        ".btn{display:block;width:100%;padding:12px;margin-top:14px;"
+        "background:rgba(131,56,236,.25);border:1px solid rgba(131,56,236,.6);"
+        "border-radius:8px;color:#c77dff;font-family:'Courier New',monospace;"
+        "font-size:.55rem;letter-spacing:4px;cursor:pointer;text-align:center}"
+        ".hint{font-size:.38rem;letter-spacing:2px;color:rgba(255,255,255,.18);margin-top:8px;text-align:center}";
+
+    String html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>GUESTBOOK</title><style>");
+    html += GB_CSS;
+    html += F("</style></head><body>"
+        "<nav><a href='/'>&#x2190; BACK</a></nav>"
+        "<h1>COSMIC GUESTBOOK</h1><p class='sub'>LEAVE YOUR MARK ON THE UNIVERSE</p>");
+
+    // Entries
+    html += F("<div class='box'>");
+    if (entries.empty()) {
+        html += F("<p class='empty'>NO ENTRIES YET \xe2\x80\x94 BE THE FIRST</p>");
+    } else {
+        for (int i = (int)entries.size() - 1; i >= 0; i--) {
+            String line = entries[i];
+            int sep = line.indexOf('\x01');
+            String name = (sep >= 0) ? line.substring(0, sep) : "ANONYMOUS";
+            String msg  = (sep >= 0) ? line.substring(sep + 1) : line;
+            html += F("<div class='entry'><div class='ename'>");
+            html += (name.length() > 0 ? name : "ANONYMOUS");
+            html += F("</div><div class='emsg'>");
+            html += msg;
+            html += F("</div></div>");
+        }
+    }
+    html += F("</div>");
+
+    // Sign form
+    if (!sdReady) {
+        html += F("<div class='box'><p class='empty'>SD CARD REQUIRED TO SIGN</p></div>");
+    } else {
+        html += F("<div class='box'>"
+            "<form method='POST' action='/guestbook/sign'>"
+            "<span class='lbl'>YOUR NAME (optional)</span>"
+            "<input type='text' name='name' maxlength='20' placeholder='TRAVELER...'>"
+            "<span class='lbl'>YOUR MESSAGE</span>"
+            "<textarea name='msg' maxlength='100' rows='3' placeholder='Leave a trace in the cosmos...' required></textarea>"
+            "<button type='submit' class='btn'>&#x2B50; SIGN THE COSMOS</button>"
+            "</form>"
+            "<p class='hint'>Messages appear to all future visitors</p>"
+            "</div>");
+    }
+    html += F("</body></html>");
+    server.send(200, "text/html", html);
+}
+
+void handleGuestbookSign() {
+    if (!sdReady) { server.send(503, "text/plain", "SD not ready"); return; }
+    String name = gbSanitize(server.arg("name"), 20);
+    String msg  = gbSanitize(server.arg("msg"),  100);
+    if (msg.length() == 0) {
+        server.sendHeader("Location", "/guestbook", true);
+        server.send(302, "text/plain", "");
+        return;
+    }
+    // Append to file
+    File f = SD.open("/guestbook.txt", FILE_APPEND);
+    if (f) {
+        f.print(name);
+        f.print('\x01');
+        f.print(msg);
+        f.print('\n');
+        f.close();
+    }
+    // Update CYD display state
+    lastGuestName = (name.length() > 0) ? name : "ANONYMOUS";
+    lastGuestMsg  = msg;
+    guestShowUntil = millis() + 10000;  // show for 10 seconds
+    server.sendHeader("Location", "/guestbook", true);
+    server.send(302, "text/plain", "");
 }
 
 // ── JPEG screensaver image display ────────────────────────────────────────────
@@ -5508,7 +5794,7 @@ static void ssJpegClose(void *pHandle) {
     (void)pHandle; ssJpegFile.close();
 }
 static int ssJpegDraw(JPEGDRAW *pDraw) {
-    gfx->draw16bitBeRGBBitmap(pDraw->x, pDraw->y, pDraw->pPixels, pDraw->iWidth, pDraw->iHeight);
+    gfx->pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
     return 1;
 }
 static void showSsaverImage() {
@@ -6021,46 +6307,6 @@ static void drawIdleScreen() {
     }
 }
 
-// ── LED helpers (active LOW) ──────────────────────────────────────────────────
-static unsigned long lastLedToggle = 0;
-static bool          ledBluOn      = false;
-
-static void updateLED() {
-    unsigned long now = millis();
-    int clients = WiFi.softAPgetStationNum();
-
-    // Flash green on new connection
-    if (clients > 0 && now < flashUntil + 300) {
-        digitalWrite(LED_R, HIGH);
-        digitalWrite(LED_G, LOW);
-        digitalWrite(LED_B, HIGH);
-        return;
-    }
-    digitalWrite(LED_G, HIGH);
-
-    if (clients > 0) {
-        // Cycle rainbow colors while visitor connected
-        static const bool COLS[6][3] = {
-            {1,0,0},{1,1,0},{0,1,0},{0,1,1},{0,0,1},{1,0,1}
-        };  // {R,G,B} active = LOW
-        if (now - ledColorLast >= 600) {
-            ledColorLast = now;
-            ledColorStep = (ledColorStep + 1) % 6;
-        }
-        digitalWrite(LED_R, COLS[ledColorStep][0] ? LOW : HIGH);
-        digitalWrite(LED_G, COLS[ledColorStep][1] ? LOW : HIGH);
-        digitalWrite(LED_B, COLS[ledColorStep][2] ? LOW : HIGH);
-    } else {
-        // Idle: slow blue blink every 1.2 s
-        if (now - lastLedToggle > 1200) {
-            lastLedToggle = now;
-            ledBluOn = !ledBluOn;
-            digitalWrite(LED_B, ledBluOn ? LOW : HIGH);
-        }
-        digitalWrite(LED_R, HIGH);
-    }
-}
-
 // ── Starfield screensaver ─────────────────────────────────────────────────────
 #define SF_N 100
 struct SFStar { float x, y, z; int16_t px, py; };
@@ -6226,57 +6472,65 @@ static void drawMsgMenu() {
     gfx->setCursor(28, 8);
     gfx->print("SEND MESSAGE");
 
-    // Preset buttons
+    // Preset buttons — highlight selected row in cyan
     for (int i = 0; i < PRESET_COUNT; i++) {
         int y = MENU_HDR_H + i * MENU_BTN_H;
-        gfx->fillRect(0, y, 320, MENU_BTN_H - 1, gfx->color565(0, 18, 38));
-        gfx->drawRect(0, y, 320, MENU_BTN_H - 1, gfx->color565(131, 56, 236));
-        gfx->setTextColor(0xFFFF);
+        bool sel = (i == menuSel);
+        gfx->fillRect(0, y, 320, MENU_BTN_H - 1, sel ? gfx->color565(0, 60, 80) : gfx->color565(0, 18, 38));
+        gfx->drawRect(0, y, 320, MENU_BTN_H - 1, sel ? 0x07FF : gfx->color565(131, 56, 236));
+        gfx->setTextColor(sel ? 0x07FF : 0xFFFF);
         gfx->setTextSize(1);
         int len = strlen(PRESETS[i]);
         gfx->setCursor((320 - len * 6) / 2, y + 13);
         gfx->print(PRESETS[i]);
     }
 
-    // Cancel button
+    // Cancel button (BtnC)
     gfx->fillRect(0, MENU_CAN_Y, 320, 240 - MENU_CAN_Y, gfx->color565(38, 0, 0));
     gfx->drawRect(0, MENU_CAN_Y, 320, 240 - MENU_CAN_Y, gfx->color565(255, 50, 50));
     gfx->setTextColor(gfx->color565(255, 80, 80));
-    gfx->setTextSize(2);
-    gfx->setCursor(116, MENU_CAN_Y + 12);
-    gfx->print("CANCEL");
+    gfx->setTextSize(1);
+    gfx->setCursor(60, MENU_CAN_Y + 14);
+    gfx->print("A:UP  B:SEND  C:CANCEL");
 }
 
-static void updateTouch() {
-    if (!ts.tirqTouched() || !ts.touched()) return;
-    unsigned long now = millis();
-    if (now - lastTouchMs < 350) return;   // debounce
-    lastTouchMs = now;
-
-    TS_Point p = ts.getPoint();
-    int sx = map(p.x, TS_MINX, TS_MAXX, 0, 319);
-    int sy = map(p.y, TS_MINY, TS_MAXY, 0, 239);
-    (void)sx; // x not needed for row-based menu
-
+// ── Button navigation (replaces touch on M5Stack) ─────────────────────────────
+// BtnB (middle) — open menu when visitor connected; send selected preset in menu
+// BtnA (left)   — scroll up through presets in menu
+// BtnC (right)  — cancel menu / close
+static void updateButtons() {
+    M5.update();
     int clients = WiFi.softAPgetStationNum();
+    unsigned long now = millis();
 
-    if (menuOpen) {
-        menuOpen = false;
-        if (sy >= MENU_CAN_Y) {
-            // Cancel — just restore idle screen
-            gfx->fillScreen(0x0000);
-            return;
+    if (!menuOpen) {
+        // BtnB opens message menu when a visitor is connected
+        if (M5.BtnB.wasPressed() && clients > 0) {
+            menuSel  = 0;
+            menuOpen = true;
+            drawMsgMenu();
         }
-        int btn = (sy - MENU_HDR_H) / MENU_BTN_H;
-        if (btn >= 0 && btn < PRESET_COUNT) {
-            pendingMsg = String(PRESETS[btn]);
+    } else {
+        // BtnA — scroll up (wraps)
+        if (M5.BtnA.wasPressed()) {
+            menuSel = (menuSel + PRESET_COUNT - 1) % PRESET_COUNT;
+            drawMsgMenu();
+        }
+        // BtnC — scroll down (wraps) OR cancel on long press not needed; just cycle
+        // Single press = scroll down; keep it simple
+        if (M5.BtnC.wasPressed()) {
+            // Long vs short: wasPressed = short. Use as cancel.
+            menuOpen = false;
+            gfx->fillScreen(0x0000);
+        }
+        // BtnB — send selected preset
+        if (M5.BtnB.wasPressed()) {
+            menuOpen = false;
+            pendingMsg = String(PRESETS[menuSel]);
             msgId++;
             menuFeedbackUntil = now + 1200;
+            gfx->fillScreen(0x0000);
         }
-        gfx->fillScreen(0x0000);
-    } else if (clients > 0) {
-        menuOpen = true;
-        drawMsgMenu();
     }
 }
 
@@ -6328,6 +6582,30 @@ static void updateDisplay() {
         gfx->fillScreen(0x0000);
     }
 
+    // ── Guestbook new-entry flash on CYD ─────────────────────────────────────
+    if (guestShowUntil > 0 && now < guestShowUntil) {
+        gfx->fillScreen(0x0000);
+        gfx->setTextColor(gfx->color565(100, 180, 255));
+        gfx->setTextSize(2);
+        gfx->setCursor(18, 16);
+        gfx->print("NEW ENTRY!");
+        gfx->setTextColor(gfx->color565(100, 220, 255));
+        gfx->setTextSize(1);
+        gfx->setCursor(18, 50);
+        gfx->print(lastGuestName.c_str());
+        gfx->setTextColor(0xFFFF);
+        gfx->setTextSize(1);
+        gfx->setCursor(18, 68);
+        gfx->setTextWrap(true);
+        gfx->print(lastGuestMsg.c_str());
+        gfx->setTextWrap(false);
+        return;
+    }
+    if (guestShowUntil > 0 && now >= guestShowUntil) {
+        guestShowUntil = 0;
+        gfx->fillScreen(0x0000);
+    }
+
     // ── Trivia game display ───────────────────────────────────────────────────
     if (triviaActive && triviaDisplayDirty) {
         triviaDisplayDirty = false;
@@ -6338,14 +6616,14 @@ static void updateDisplay() {
         gfx->setCursor(22, 16);
         gfx->print("COSMIC TRIVIA");
         // Progress bar
-        int barFill = (triviaQ * 298) / 25;
+        int barFill = (triviaQ * 298) / 100;
         gfx->drawRect(11, 50, 298, 10, gfx->color565(60, 20, 100));
         gfx->fillRect(11, 50, barFill, 10, hdr);
         // Q and score
         gfx->setTextColor(0x07FF); // cyan
         gfx->setTextSize(2);
         char tbuf[32];
-        snprintf(tbuf, sizeof(tbuf), "Q %d / 25", triviaQ + 1);
+        snprintf(tbuf, sizeof(tbuf), "Q %d / 100", triviaQ + 1);
         gfx->setCursor(20, 80);
         gfx->print(tbuf);
         snprintf(tbuf, sizeof(tbuf), "SCORE: %d", triviaScore);
@@ -6409,42 +6687,26 @@ static void updateDisplay() {
 //  setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void setup() {
-    Serial.begin(115200);
-    Serial.println("COSMIC-CYD booting...");
+    // M5.begin(LCDEnable, SDEnable, SerialEnable, I2CEnable)
+    // Disable SD here — we init it manually below to check success
+    M5.begin(true, false, true, false);
+    Serial.println("COSMIC-CORE booting...");
 
-    // ── Display init ──────────────────────────────────────────────────────────
-    if (!gfx->begin()) {
-        Serial.println("gfx->begin() failed!");
-    }
+    // Display already initialised by M5.begin(); set landscape rotation
+    gfx->setRotation(1);
     gfx->fillScreen(0x0000);
-    pinMode(GFX_BL, OUTPUT);
-    digitalWrite(GFX_BL, HIGH);
 
     gfx->setTextColor(gfx->color565(131, 56, 236));
     gfx->setTextSize(2);
     gfx->setCursor(20, 50);
-    gfx->print("COSMIC-CYD");
+    gfx->print("COSMIC-CORE");
     gfx->setTextSize(1);
     gfx->setTextColor(gfx->color565(6, 255, 208));
     gfx->setCursor(20, 80);
     gfx->print("BOOTING...");
 
-    // ── RGB LED ───────────────────────────────────────────────────────────────
-    pinMode(LED_R, OUTPUT); digitalWrite(LED_R, HIGH);
-    pinMode(LED_G, OUTPUT); digitalWrite(LED_G, HIGH);
-    pinMode(LED_B, OUTPUT); digitalWrite(LED_B, HIGH);
-
-    // ── Boot button ───────────────────────────────────────────────────────────
-    pinMode(0, INPUT_PULLUP);
-
-    // ── Touch ─────────────────────────────────────────────────────────────────
-    touchSPI.begin(25, 39, 32, TOUCH_CS);
-    ts.begin(touchSPI);
-    ts.setRotation(1);
-
-    // ── SD card ───────────────────────────────────────────────────────────────
-    sdSPI.begin(18, 19, 23, 5);
-    sdReady = SD.begin(5, sdSPI);
+    // ── SD card (M5Stack Core CS = GPIO4) ────────────────────────────────────
+    sdReady = SD.begin(4);
     gfx->setCursor(20, 100);
     gfx->setTextSize(1);
     if (sdReady) {
@@ -6604,6 +6866,8 @@ void setup() {
     server.on("/trivia/play",    HTTP_GET,  handleTriviaPlay);
     server.on("/trivia/answer",  HTTP_GET,  handleTriviaAnswer);
     server.on("/trivia/results", HTTP_GET,  handleTriviaResults);
+    server.on("/guestbook",      HTTP_GET,  handleGuestbook);
+    server.on("/guestbook/sign", HTTP_POST, handleGuestbookSign);
     server.on("/api/msg",          HTTP_GET,  handleApiMsg);
     server.on("/api/visitor-msg",  HTTP_POST, handleApiVisitorMsg);
     server.on("/favicon.ico", HTTP_GET, []() { server.send(404, "text/plain", ""); });
@@ -6623,7 +6887,7 @@ void setup() {
     delay(1500);
     gfx->fillScreen(0x0000);
 
-    Serial.println("COSMIC-CYD ready.");
+    Serial.println("COSMIC-CORE ready.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6632,7 +6896,6 @@ void setup() {
 void loop() {
     dnsServer.processNextRequest();
     server.handleClient();
-    updateTouch();
+    updateButtons();
     updateDisplay();
-    updateLED();
 }
